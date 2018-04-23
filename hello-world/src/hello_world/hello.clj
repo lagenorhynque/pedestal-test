@@ -1,5 +1,7 @@
 (ns hello-world.hello
-  (:require [io.pedestal.http :as http]
+  (:require [clojure.data.json :as json]
+            [io.pedestal.http :as http]
+            [io.pedestal.http.content-negotiation :as conneg]
             [io.pedestal.http.route :as route]))
 
 (def unmentionables #{"YHWH" "Voldemort" "Mxyzptlk" "Rumplestiltskin" "曹操"})
@@ -25,9 +27,41 @@
       (ok resp)
       (not-found))))
 
+(def echo
+  {:name ::echo
+   :enter #(assoc % :response (ok (:request %)))})
+
+(def supported-types ["text/html" "application/edn" "application/json" "text/plain"])
+
+(def content-neg-intc (conneg/negotiate-content supported-types))
+
+(defn acceped-type [context]
+  (get-in context [:request :accept :field] "text/plain"))
+
+(defn transform-content [body content-type]
+  (case content-type
+    "text/html" body
+    "text/plain" body
+    "application/edn" (pr-str body)
+    "application/json" (json/write-str body)))
+
+(defn coerce-to [response content-type]
+  (-> response
+      (update :body transform-content content-type)
+      (assoc-in [:headers "Content-Type"] content-type)))
+
+(def coerce-body
+  {:name ::coerce-body
+   :leave
+   (fn [context]
+     (cond-> context
+       (nil? (get-in context [:response :body :headers "Content-Type"]))
+       (update-in [:response] coerce-to (acceped-type context))))})
+
 (def routes
   (route/expand-routes
-   #{["/greet" :get respond-hello :route-name :greet]}))
+   #{["/greet" :get [coerce-body content-neg-intc respond-hello] :route-name :greet]
+     ["/echo" :get echo]}))
 
 (defn create-server []
   (http/create-server
